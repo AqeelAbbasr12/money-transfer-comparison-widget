@@ -1,103 +1,144 @@
-import Image from "next/image";
+'use client';
+
+import { useState } from 'react';
+import { Provider, ComparisonRequest, WiseApiComparison } from '@/types';
+
+import { TransferForm } from '@/components/TransferForm';
+import { ComparisonTable } from '@/components/ComparisonTable';
+import { LoadingSpinner } from '@/components/LoadingSpinner';
+import { ErrorMessage } from '@/components/ErrorMessage';
+
+function parseISODuration(duration: string): string {
+  const regex = /PT(?:(\d+)H)?(?:(\d+)M)?/;
+  const matches = duration.match(regex);
+
+  if (!matches) return duration;
+
+  const hours = matches[1] ? `${matches[1]} hour${matches[1] !== '1' ? 's' : ''}` : '';
+  const minutes = matches[2] ? `${matches[2]} minute${matches[2] !== '1' ? 's' : ''}` : '';
+  const separator = hours && minutes ? ' ' : '';
+
+  return hours + separator + minutes;
+}
+
+const currencies = ['USD', 'EUR', 'GBP', 'INR', 'CAD', 'AUD'];
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  const [formData, setFormData] = useState<ComparisonRequest>({
+    sendAmount: 100,
+    sourceCurrency: 'USD',
+    targetCurrency: 'EUR',
+  });
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isFormInvalid = formData.sendAmount <= 0 || isNaN(formData.sendAmount);
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value } = e.target;
+    setFormData(prevState => ({
+      ...prevState,
+      [name]: name === 'sendAmount' ? parseFloat(value) || 0 : value,
+    }));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    // 1. VALIDATION: Check if the amount is valid before doing anything else
+    if (formData.sendAmount <= 0 || isNaN(formData.sendAmount)) {
+      setError('Please enter a valid amount greater than 0.');
+      return; // Stop the function execution here
+    }
+
+    if (isFormInvalid) {
+      setError('Please enter a valid amount greater than 0.');
+      return;
+    }
+
+    setIsLoading(true);
+    setError(null);
+    setProviders([]);
+
+
+
+    const params = new URLSearchParams({
+      sourceCurrency: formData.sourceCurrency,
+      targetCurrency: formData.targetCurrency,
+      sendAmount: formData.sendAmount.toString(),
+    });
+
+    try {
+      const response = await fetch(`https://api.wise.com/v4/comparisons/?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      const wiseData: WiseApiComparison = await response.json();
+      if (!wiseData.providers || wiseData.providers.length === 0) {
+        setError('No transfer options found. Please try a different amount or currency pair.');
+        setProviders([]);
+      } else {
+        const simplifiedProviders = wiseData.providers.map(provider => {
+          const firstQuote = provider.quotes[0];
+          if (!firstQuote) return null;
+          let deliveryEstimate = 'Unknown';
+          if (firstQuote.deliveryEstimation?.providerGivesEstimate) {
+            const duration = firstQuote.deliveryEstimation.duration;
+            if (duration?.min && duration?.max) {
+              if (duration.min === duration.max) {
+                deliveryEstimate = `Within ${parseISODuration(duration.min)}`;
+              } else {
+                deliveryEstimate = `${parseISODuration(duration.min)} - ${parseISODuration(duration.max)}`;
+              }
+            } else if (duration?.max) {
+              deliveryEstimate = `By ${parseISODuration(duration.max)}`;
+            } else {
+              deliveryEstimate = 'N/A';
+            }
+          }
+          return {
+            name: provider.name,
+            fee: firstQuote.fee,
+            rate: firstQuote.rate,
+            receivedAmount: firstQuote.receivedAmount,
+            deliveryEstimate: deliveryEstimate,
+          };
+        }).filter(provider => provider !== null) as Provider[];
+        setProviders(simplifiedProviders);
+      }
+    } catch (err) {
+      console.error("Fetch failed:", err);
+      setError('Failed to fetch data. Please check your connection.');
+      setProviders([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <main className="min-h-screen p-8 bg-gray-50">
+      <div className="max-w-4xl mx-auto bg-white rounded-xl shadow-md p-6">
+        <h1 className="text-2xl font-bold text-center text-gray-800 mb-6">Money Transfer Comparison</h1>
+
+        <TransferForm
+          formData={formData}
+          isLoading={isLoading}
+          currencies={currencies}
+          isDisabled={isFormInvalid}
+          onInputChange={handleInputChange}
+          onSubmit={handleSubmit}
+        />
+
+        <div>
+          {isLoading && <LoadingSpinner />}
+          {error && <ErrorMessage message={error} />}
+          {!isLoading && !error && providers.length > 0 && (
+            <ComparisonTable providers={providers} sourceCurrency={formData.sourceCurrency} />
+          )}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+      </div>
+    </main>
   );
 }
